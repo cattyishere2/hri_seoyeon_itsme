@@ -1779,6 +1779,21 @@ function rescueVideo(v, t) {
   v._blobbed = true; toBlobSrc(v);
   try { v.load(); const p = v.play(); if (p && p.catch) p.catch(() => {}); } catch (_) {}
 }
+function vidStalled(v) {
+  const now = v.currentTime;
+  if (v._lastCT !== now) { v._lastCT = now; v._movedAt = time; }
+  if (v._movedAt === undefined) v._movedAt = time;
+  const s = !v.ended && (v.paused || time - v._movedAt > 1.2);
+  if (s && time - (v._movedAt || 0) > 1.2) v._stallSeen = time;
+  return s;
+}
+function playNow(v) { v._tapT = time; try { v.muted = true; const p = v.play(); if (p && p.catch) p.catch(() => {}); } catch (_) {} sfx("select"); }
+function drawTapToPlay(v, t) {
+  if (t < 1.2 || !vidStalled(v)) return;
+  R(0, 0, 320, 180, "rgba(0,0,0,0.35)");
+  EO(160, 84, 22, 22, "rgba(255,255,255,0.9)", C.out); for (let i = 0; i < 14; i++) R(153 + i, 77 + Math.floor(i / 2), 1, 14 - i, C.roseD);
+  T(L({ ko: "화면을 눌러 재생", en: "Tap to play" }), 160, 114, C.white, "center");
+}
 function unlockVideos() {
   for (const v of GAME_VIDEOS) { if (v._unlocked) continue; v._unlocked = true;
     try { const p = v.play(); if (p && p.then) p.then(() => { if (!v._using) { v.pause(); v.currentTime = 0; } }).catch(() => { v._unlocked = false; }); } catch (_) {} }
@@ -1876,7 +1891,7 @@ function press(k) {
   }
   if (scene === "cafe") {
     if (rhythm) { if (k === "a") rhythmPress(); return; }
-    if (vidWait) { if (k === "a" && popup && popup.t > 2.5) { vidWait = false; try { PF_VIDEO.pause(); } catch (_) {} next(); } return; }
+    if (vidWait) { if (k === "a" && vidStalled(PF_VIDEO)) { playNow(PF_VIDEO); return; } if (k === "a" && popup && popup.t > 2.5 && !(time - (PF_VIDEO._tapT || -99) < 1.5) && !(time - (PF_VIDEO._stallSeen || -99) < 1.5)) { vidWait = false; try { PF_VIDEO.pause(); } catch (_) {} next(); } return; }
     if (choice && choice.id === "parfait") {
       if (k === "left" || k === "up") { choice.idx = (choice.idx + 2) % 3; sfx("blip"); }
       else if (k === "right" || k === "down") { choice.idx = (choice.idx + 1) % 3; sfx("blip"); }
@@ -1910,8 +1925,9 @@ function press(k) {
     return;
   }
   if (scene === "credits") { if (k === "a") { if (_credDone >= 0) toTrueEnd(); else credFast = true; } return; }
-  if (scene === "hidden" && hvid) { if (k === "a" && popup && popup.t > 2.5) endBts(); return; }
+  if (scene === "hidden" && hvid) { if (k === "a" && vidStalled(BTS_VIDEO)) { playNow(BTS_VIDEO); return; } if (k === "a" && popup && popup.t > 2.5 && !(time - (BTS_VIDEO._tapT || -99) < 1.5) && !(time - (BTS_VIDEO._stallSeen || -99) < 1.5)) endBts(); return; }
   if (dialog) { if (k === "a") advance(); return; }
+  if (scene === "gate" && ofc.phase === "video" && k === "a") { if (vidStalled(GATE_VIDEO)) playNow(GATE_VIDEO); return; }
   if (scene === "boss") { if (k === "left") input.left = true; else if (k === "right") input.right = true; return; }
   if (isWorld() && !busy()) {
     if (k === "left") { input.left = true; target = null; }
@@ -1984,7 +2000,7 @@ canvasTop.addEventListener("pointerdown", (e) => {
   if (scene !== "title" && inRect(p, GEAR_BTN)) { openSettings(); return; }
   if (scene === "title") return;
   if (scene === "end") { if (endKind !== "true") press("a"); return; }
-  if (vidWait || rhythm || (scene === "hidden" && hvid) || scene === "credits") { press("a"); return; }
+  if (vidWait || rhythm || (scene === "hidden" && hvid) || scene === "credits" || (scene === "gate" && ofc.phase === "video")) { press("a"); return; }
   if (scene === "boss" && boss && !dialog) { boss.tx = p.x; return; }
   if (choice && (choice.id === "quiz" || choice.id === "parfait")) return;
   if (choice && choice.id !== "cabinet") { const h = CHOICE_HIT.find((r) => inRect(p, r)); if (h) { choice.idx = h.i; pickGeneric(h.i); } return; }
@@ -2021,7 +2037,8 @@ canvasBot.addEventListener("pointerdown", (e) => {
   }
   if (scene === "end") { if (endKind === "true") { if (time - endShownT < 1.5) return; for (let i = 0; i < 2; i++) if (inRect(p, END_BTN(i))) { endSel = i; endChoose(i); } return; } press("a"); return; }
   if (scene === "boss" && boss && !dialog) { boss.tx = p.x; return; }
-  if (scene === "hidden" && hvid) { if (popup && popup.t > 2.5) endBts(); return; }
+  if (scene === "hidden" && hvid) { press("a"); return; }
+  if (scene === "gate" && ofc.phase === "video") { press("a"); return; }
   if (scene === "credits") { press("a"); return; }
   if (scene === "cafe") {
     if (rhythm || vidWait) { press("a"); return; }
@@ -3400,19 +3417,20 @@ POPUPS.dive = function (t) {
 };
 FULL_POPS.add("dive");
 /* ---------- 점심 파르페 영상 (화면 꽉) ---------- */
-POPUPS.video = function () {
+POPUPS.video = function (t) {
   R(0, 0, 320, 180, "#000");
   ctx.save(); ctx.imageSmoothingEnabled = true;
   if (PF_VIDEO.readyState >= 2) ctx.drawImage(PF_VIDEO, 0, 0, 320, 180); else if (IMG.pf_poster && IMG.pf_poster.width) ctx.drawImage(IMG.pf_poster, 0, 0, 320, 180);
   ctx.restore();
   if (vidWait && Math.floor(time * 2) % 2) T("▶", 306, 4, C.white);
+  drawTapToPlay(PF_VIDEO, t);
 };
 FULL_POPS.add("video");
 function updateVideo() {
   if (!vidWait || !popup || popup.id !== "video") return;
   rescueVideo(PF_VIDEO, popup.t);
   if (popup.t > 0.3 && PF_VIDEO.paused && !PF_VIDEO.ended) { try { const p = PF_VIDEO.play(); if (p && p.catch) p.catch(() => {}); } catch (_) {} }
-  if (PF_VIDEO.ended || popup.t > 8 || (popup.t > 3 && PF_VIDEO.error && PF_VIDEO._blobbed)) { vidWait = false; next(); }
+  if (PF_VIDEO.ended || popup.t > (vidStalled(PF_VIDEO) ? 20 : 8) || (popup.t > 3 && PF_VIDEO.error && PF_VIDEO._blobbed)) { vidWait = false; next(); }
 }
 /* ---------- 「두근두근 파르페」 로고 (PF-L 틀 + Head 도트 글자, 두근두근) ---------- */
 POPUPS.pflogo = function (t) {
@@ -3842,7 +3860,7 @@ function updateGate() {   // 게이트 영상: 끝까지 보고 넘어감 (느�
   if (scene !== "gate" || ofc.phase !== "video" || ofc.adv) return;
   const e = time - ofc.phaseT;
   if (e > 0.5 && GATE_VIDEO.paused && !GATE_VIDEO.ended) { try { const p = GATE_VIDEO.play(); if (p && p.catch) p.catch(() => {}); } catch (_) {} }
-  if (GATE_VIDEO.ended || e > 6 || (e > 2.4 && GATE_VIDEO.error && GATE_VIDEO._blobbed)) { ofc.adv = true; next(); }
+  if (GATE_VIDEO.ended || e > (vidStalled(GATE_VIDEO) ? 15 : 6) || (e > 2.4 && GATE_VIDEO.error && GATE_VIDEO._blobbed)) { ofc.adv = true; next(); }
 }
 function sfxDing() { if (!PREFS.sfx) return; tone(1318, 0.5, "triangle", 0.06); tone(1046, 0.7, "triangle", 0.05, 0.28); }
 function sfxShot() { if (PREFS.sfx) tone(1568, 0.025, "square", 0.008); }
@@ -4137,6 +4155,7 @@ function drawGateBot() {
   const e = time - ofc.phaseT;
   if (ofc.phase === "video" || ofc.phase === "slide") {
     if (ofc.phase === "video") rescueVideo(GATE_VIDEO, e);
+    const gateTap = ofc.phase === "video";
     R(0, 0, 320, 180, "#222");
     ctx.save(); ctx.imageSmoothingEnabled = true;
     if (ofc.phase === "video" && GATE_VIDEO.readyState >= 2) ctx.drawImage(GATE_VIDEO, 0, 0, 320, 180);
@@ -4160,6 +4179,7 @@ function drawGateBot() {
         for (let i = 0; i < 4; i++) R(Math.round(x - 40 - i * 14), floor - 20 + i * 5, 12, 1, C.white);
       }
     }
+    if (gateTap) drawTapToPlay(GATE_VIDEO, time - ofc.phaseT);
     drawFlash(); return;
   }
   if (ofc.phase === "ding") {   // 엘리베이터 안: 닫힌 은색 문 앞에 선 에드워드
@@ -4436,12 +4456,13 @@ function updateHidden() {
   if (BTS_VIDEO.ended || popup.t > 32 || (popup.t > 12 && BTS_VIDEO.error && BTS_VIDEO._blobbed)) { endBts(); return; }
   if (popup.t > 1 && BTS_VIDEO.paused && !BTS_VIDEO.ended) { try { const p = BTS_VIDEO.play(); if (p && p.catch) p.catch(() => {}); } catch (_) {} }
 }
-POPUPS.bts = function () {
+POPUPS.bts = function (t) {
   R(0, 0, 320, 180, "#000");
   ctx.save(); ctx.imageSmoothingEnabled = true;
   if (BTS_VIDEO.readyState >= 2) ctx.drawImage(BTS_VIDEO, 0, 0, 320, 180); else if (IMG.bts_poster.width) ctx.drawImage(IMG.bts_poster, 0, 0, 320, 180);
   ctx.restore();
   if (Math.floor(time * 2) % 2) T("▶", 306, 4, C.white);
+  drawTapToPlay(BTS_VIDEO, t);
 };
 FULL_POPS.add("bts");
 function drawSunsetSky(top) {
